@@ -1,0 +1,233 @@
+#module RppRepairer
+#deffunc SetupRepairer
+    exist "rppheader.txt"
+    if strsize = -1 {
+        dialog "rppheaderファイルが存在しません。"
+        end
+    }
+    sdim rppHeader, strsize
+    bload "rppheader.txt", rppHeader
+
+    exist "rppheader_m.txt"
+    if strsize = -1 {
+        dialog "rppheader_mファイルが存在しません。"
+        end
+    }
+    sdim rppHeader_m, strsize
+    bload "rppheader_m.txt", rppHeader_m
+    return
+
+#deffunc SetBPM int BPM_
+    BPM = BPM_
+return
+
+#deffunc RepairRPP str filePath
+
+    //ファイルの存在確認
+    exist filePath
+    fileSize = strsize
+    if fileSize = -1 {
+        dialog "ファイルが存在しません。\n" + filePath
+        return
+    }
+
+    //破損部分の除去後のサイズ
+    fixedFileSize = fileSize - 153605 - 21*16 + 1
+
+    //全て暗号化されている場合
+    if fixedFileSize < 1 {
+        dialog "ファイルサイズが小さいため修復できません。\n" + filePath
+        return
+    }
+
+    sdim vvewData, fileSize
+    sdim fixedVvewData, fixedFileSize
+
+    bload filePath, vvewData
+
+    //153605byte目までを捨てる
+    memcpy fixedVvewData, vvewData, fixedFileSize, 0, 153605
+
+    //さらにタグが始まるまでの部分を切り捨てるために、その後のサイズを計算
+    fixedRppSize = fixedFileSize - instr(fixedVvewData, 0, "<")
+
+    //暗号化部分が大きすぎる場合
+    if fixedRppSize = fixedFileSize + 1{
+        dialog "ファイルサイズが小さいため修復できません。\n" + filePath
+        return
+    }
+
+    //10000は予備
+    sdim fixedRppData, fixedRppSize + strlen(rppHeader) + 10000
+
+    //タグが始まるまでの部分を除去
+    memcpy fixedRppData, fixedVvewData, fixedRppSize, 0, instr(fixedVvewData, 0, "<")
+
+    //マスターのFXかトラックのFXかを見分けるためのインデントの確認
+    //ついでに普通にインデントの修復も行う
+    //だけどmodifiedHeaderがインデント対応してない
+    notesel fixedRppData
+    noteget nextLine, 1
+    repeat 100
+        tempStr = strmid(nextLine, cnt, 1)
+        if tempStr!= " "{
+            tagNest = cnt / 2 - 1
+            if tagNest = -1{
+                tagNest = 0
+            }
+            break
+        }
+
+        //ここでエラーを出していいのか分からないけど、インデントが多すぎる場合は破損してる場合が多いと思うので一応
+        if cnt = 100{
+            dialog "Can't find nest.\n" + filePath
+            return
+        }
+    loop
+
+    spaces = ""
+    
+    repeat tagNest
+        spaces += "  "
+    loop
+
+    masterFxMode =  0
+
+    //破損部分除去後のタグの始まりが何かを調べてそれにあわせてヘッダを追加
+    //この部分未完成だけどこのツール自体の必要性が分からないので使いたい人は治して
+    checkTag = strmid(fixedRppData, 1, 2)
+    modifiedHeader = ""
+    switch checkTag
+        case "VS" //vst
+            //Master
+            if tagNest = 2{
+                masterFxMode = 1
+            }
+
+            //Track
+            if tagNest = 3{
+                modifiedHeader = {"
+                <FXCHAIN
+                  WNDRECT 279 268 1215 708
+                  SHOW 0
+                  LASTSEL 0
+                  DOCKED 0
+                  BYPASS 0 0 0
+            "}
+            }
+
+            swbreak 
+
+        case "FX" //fxchain
+
+            swbreak
+
+        case "IT" //item
+            swbreak
+
+        case "SO" //source midi or source wave
+        modifiedHeader ={"
+            <ITEM
+            POSITION 2.72727272727273
+            SNAPOFFS 0
+            LENGTH 206.53893501798953
+            LOOP 1
+            ALLTAKES 0
+            FADEIN 1 0.01 0 1 0 0 0
+            FADEOUT 1 0.01 0 1 0 0 0
+            MUTE 0 0
+            SEL 0
+            IGUID {2B5DC3CA-6368-4768-86B2-044BF0F3DBF7}
+            IID 3
+            NAME BrokenData.wav
+            VOLPAN 1 0 1 -1
+            SOFFS 3.56106498201058
+            PLAYRATE 1 1 0 -1 0 0.0025
+            CHANMODE 0
+            GUID {391F2A31-9F25-44C3-AEEF-A3B201F20919}
+        "}
+            swbreak 
+
+        case "TR" //track
+            swbreak
+
+        case "X " //X
+            swbreak
+    swend
+
+    //テンプレのヘッダにテンポを設定
+    if masterFxMode = 0{
+        strrep rppHeader, "TEMPO_HERE", str(BPM)
+        
+        //ヘッダとクリーンアップしたvvewを結合
+        fixedRppData = rppHeader + modifiedHeader  + spaces + fixedRppData
+    }else{
+        strrep rppHeader_m, "TEMPO_HERE", str(BPM)
+        
+        //ヘッダとクリーンアップしたvvewを結合
+        fixedRppData = rppHeader_m + spaces + fixedRppData
+    }
+
+
+    //rppにはnullが含まれないのでstrlenでサイズを調べてから保存
+    bsave getpath(filePath, 1), fixedRppData, strlen(fixedRppData)
+    return
+
+#global
+
+screen 0, 500, 180
+title "[STOP Djvu] Reaper Project File Repairer"
+SetupRepairer
+
+sdim filePath
+BPM = 132
+
+mes ".rpp.vvewのファイルパスを指定"
+input filePath, 350, 20
+inputFilePath = stat
+pos 360, 16
+button gosub "開く", *OpenVVEW
+pos 0, 50
+mes "BPMを指定"
+input BPM, 50, 20
+
+objsize 500,25
+chkbox "フォルダ内の全てのvvewに対して修復を行う", doAll
+
+pos 0,150
+button "修復開始", *StartRepair
+stop
+
+*OpenVVEW
+    dialog "vvew", 16
+    if stat {
+        filePath = refstr
+        objprm inputFilePath, filePath
+    }
+return
+
+*StartRepair
+    //ファイルの存在確認
+    exist filePath
+    fileSize = strsize
+    if fileSize = -1 {
+        dialog "ファイルが存在しません。\n" + filePath
+        stop
+    }
+
+    SetBPM(BPM)
+    chdir getpath(filePath, 32)
+    if doAll{
+        dirlist fileList,"*.vvew",1
+        split fileList, "\n", fileList
+        foreach fileList
+            if fileList(cnt) = ""{
+                continue
+            }
+            RepairRPP fileList(cnt)
+        loop
+    }else{
+        RepairRPP filePath
+    }
+    dialog "処理が完了しました。"
+    stop

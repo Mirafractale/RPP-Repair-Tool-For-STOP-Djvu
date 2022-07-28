@@ -1,0 +1,6 @@
+*.exe
+*.ax
+hsptmp
+packfile
+*.rpp
+*.rpp-bak
